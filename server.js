@@ -1,17 +1,13 @@
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
-const bodyParser = require('body-parser');
 
 const app = express();
-app.use(bodyParser.json());
-
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-let bots =;
+let bots = [];
 let liderCoordenadas = { x: 0, y: 0 };
-
 let configuracaoSwarm = {
     gameWsUrl: "wss://chat.delt.io/delta7?protocol=v1",
     quantidade: 20,
@@ -108,7 +104,7 @@ wss.on('connection', (ws) => {
                 configuracaoSwarm = { ...configuracaoSwarm, ...msg.data };
             } else if (msg.type === 'start_swarm') {
                 bots.forEach(b => b.parar());
-                bots =;
+                bots = [];
                 configuracaoSwarm = { ...configuracaoSwarm, ...msg.data };
                 for (let i = 1; i <= configuracaoSwarm.quantidade; i++) {
                     setTimeout(() => {
@@ -119,11 +115,14 @@ wss.on('connection', (ws) => {
                 }
             } else if (msg.type === 'stop_swarm') {
                 bots.forEach(b => b.parar());
-                bots =;
+                bots = [];
             }
         } catch (e) {}
     });
 });
 
-const PORT = process.env.PORT || 4848;
-server.listen(PORT, () => console.log(`=== MOTOR CLOUD ATIVO NA PORTA ${PORT} ===`));
+// Vinculação Estrita exigida pelo Render para evitar o erro status 1
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`=== MOTOR CLOUD ATIVO NA PORTA ${PORT} ===`);
+});
