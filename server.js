@@ -6,166 +6,115 @@ const bodyParser = require('body-parser');
 const app = express();
 app.use(bodyParser.json());
 
+app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+    next();
+});
+
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-let bots = [];
-let liderCoordenadas = { x: 0, y: 0 };
-let liderMassa = 10; // Rastreia o tamanho do jogador principal para cálculos de IA
+let painelConexao = null;
+let registradorTampermonkey = null;
 
-let configuracaoSwarm = {
-    gameWsUrl: "wss://chat.delt.io/delta7?protocol=v1",
-    quantidade: 20,
-    nome: "BoxBot",
-    comportamento: "feedMe"
+// --- BANCO DE DADOS DA IA EVOLUTIVA DO JOGADOR ---
+let geracaoPlayerIA = 1;
+let melhorScorePlayer = 0;
+let scorePartidaAtual = 0;
+
+// DNA Inicial do Jogador Principal (Pesos de Tomada de Decisão Neural)
+let dnaPlayer = {
+    ganhoComida: 1.5,      // Força de atração por pellets
+    pesoFuga: -2.8,        // Força de repulsão de inimigos maiores e vírus
+    pesoAtaque: 2.2,       // Força de perseguição a alvos menores
+    limiteMassaSplit: 1.1  // Margem de segurança matemática para o bote
 };
 
-class BotIntancia {
-    constructor(id, targetUrl, name) {
-        this.id = id;
-        this.targetUrl = targetUrl;
-        this.name = `${name}-${id}`;
-        this.ws = null;
-        this.intervaloMovimento = null;
-        this.conectado = false;
-        
-        // Memória e Física de IA do Bot
-        this.massaAtual = 10; 
-        this.anguloOrbita = (Math.PI * 2 / configuracaoSwarm.quantidade) * id;
-    }
-
-    conectar() {
-        try {
-            this.ws = new WebSocket(this.targetUrl, {
-                perMessageDeflate: false,
-                headers: {
-                    'Origin': 'https://pages.dev',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-            });
-            this.ws.binaryType = 'arraybuffer';
-
-            this.ws.on('open', () => {
-                this.conectado = true;
-                this.spawnar();
-                this.iniciarCerebroIA();
-            });
-
-            this.ws.on('close', () => { this.conectado = false; this.parar(); });
-            this.ws.on('error', () => {});
-        } catch (e) {}
-    }
-
-    spawnar() {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-        const buffer = Buffer.alloc(1 + 2 * this.name.length);
-        buffer.writeUInt8(0, 0);
-        for (let i = 0; i < this.name.length; i++) {
-            buffer.writeUInt16LE(this.name.charCodeAt(i), 1 + 2 * i);
+app.post('/api/sync-arena', (req, res) => {
+    if (req.body && req.body.gameWsUrl) {
+        if (painelConexao && painelConexao.readyState === WebSocket.OPEN) {
+            painelConexao.send(JSON.stringify({ type: "arena_auto_update", url: req.body.gameWsUrl }));
         }
-        this.ws.send(buffer);
     }
-
-    iniciarCerebroIA() {
-        this.intervaloMovimento = setInterval(() => {
-            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-
-            let alvoX = liderCoordenadas.x;
-            let alvoY = liderCoordenadas.y;
-
-            // --- MOTOR DE COMPORTAMENTOS INTELIGENTES (Calibragem Avançada) ---
-            
-            if (configuracaoSwarm.comportamento === 'orbit') {
-                // Órbita geométrica circular perfeita ao redor do centro do líder
-                this.anguloOrbita += 0.04; // Velocidade de rotação da órbita
-                const raioOrbita = 220 + (this.id * 5); // Distância segura para coletar pellets ao redor
-                alvoX += Math.cos(this.anguloOrbita) * raioOrbita;
-                alvoY += Math.sin(this.anguloOrbita) * raioOrbita;
-            } 
-            else if (configuracaoSwarm.comportamento === 'scatter') {
-                // Dispersão tática de emergência
-                alvoX += (Math.random() - 0.5) * 800;
-                alvoY += (Math.random() - 0.5) * 800;
-            }
-            else if (configuracaoSwarm.comportamento === 'freeze') {
-                return; // Trava o bot estático na posição atual
-            }
-
-            // Envio do Pacote Binário de Movimento (Opcode 16) apontando pro centro exato do alvo
-            const bufferMovimento = Buffer.alloc(21);
-            bufferMovimento.writeUInt8(16, 0); 
-            bufferMovimento.writeDoubleLE(alvoX, 1);
-            bufferMovimento.writeDoubleLE(alvoY, 9);
-            bufferMovimento.writeUInt32LE(0, 17);
-            this.ws.send(bufferMovimento);
-
-            // --- SISTEMA DE TOMADA DE DECISÃO DE MASSA AUTOMÁTICA ---
-            if (configuracaoSwarm.comportamento === 'feedMe') {
-                // REGRA 1: Se o bot crescer mais que o líder, executa Auto-Split (Opcode 17) em direção ao centro do jogador
-                if (this.massaAtual > liderMassa * 1.2) {
-                    this.executarAcao(17); 
-                } 
-                // REGRA 2: Se ainda estiver maior ou em rota de aproximação, ejeta massa continuamente (Opcode 21)
-                else {
-                    this.executarAcao(21);
-                }
-            }
-        }, 65); // Clock ultra veloz de 65ms importado da engenharia de ponta do AposBot
-    }
-
-    executarAcao(opcode) {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-        const buffer = Buffer.alloc(1);
-        buffer.writeUInt8(opcode, 0);
-        this.ws.send(buffer);
-    }
-
-    parar() {
-        if (this.intervaloMovimento) clearInterval(this.intervaloMovimento);
-        if (this.ws) this.ws.close();
-    }
-}
+    res.sendStatus(200);
+});
 
 wss.on('connection', (ws) => {
+    // Identifica se quem conectou foi o Painel Python ou o Tampermonkey do jogo
     ws.on('message', (message) => {
         try {
             const msg = JSON.parse(message);
             
-            // Atualiza dados de telemetria do líder vindos do painel Python
-            if (msg.type === 'update_coords' || msg.type === 'player_position') {
-                liderCoordenadas = msg.data;
-                if (msg.massa) liderMassa = msg.massa; // Sincroniza tamanho real da sua célula
-            } 
-            // Disparos manuais por Hotkeys
-            else if (msg.type === 'action_trigger') {
-                const opcode = msg.data.action === 'split' ? 17 : 21;
-                bots.forEach(bot => { if (bot.conectado) bot.executarAcao(opcode); });
-            } 
-            else if (msg.type === 'update_settings') {
-                configuracaoSwarm = { ...configuracaoSwarm, ...msg.data };
-            } 
-            else if (msg.type === 'start_swarm') {
-                bots.forEach(b => b.parar());
-                bots = [];
-                configuracaoSwarm = { ...configuracaoSwarm, ...msg.data };
-                for (let i = 1; i <= configuracaoSwarm.quantidade; i++) {
-                    setTimeout(() => {
-                        const bot = new BotIntancia(i, configuracaoSwarm.gameWsUrl, configuracaoSwarm.nome);
-                        bot.conectar();
-                        bots.push(bot);
-                    }, i * 60);
+            // Sincroniza comandos vindos da Interface Python
+            if (msg.type === "set_hotkey") {
+                wss.clients.forEach(client => {
+                    if (client !== ws && client.readyState === WebSocket.OPEN) {
+                        client.send(JSON.stringify(msg));
+                    }
+                });
+            }
+            
+            // Monitoramento e Telemetria em Tempo Real vinda do Jogo (Tampermonkey)
+            else if (msg.type === "ia_status") {
+                if (painelConexao && painelConexao.readyState === WebSocket.OPEN) {
+                    painelConexao.send(JSON.stringify(msg)); // Repassa o status de LIGADO/DESLIGADO pro painel
                 }
-            } 
-            else if (msg.type === 'stop_swarm') {
-                bots.forEach(b => b.parar());
-                bots = [];
+                
+                // Algoritmo Evolutivo aciona quando a IA é desligada ou reseta
+                if (msg.ativo === false) {
+                    processarEvolucaoIA();
+                }
+            }
+            
+            else if (msg.type === "telemetria_score") {
+                scorePartidaAtual = msg.score;
+                if (scorePartidaAtual > melhorScorePlayer) {
+                    melhorScorePlayer = scorePartidaAtual;
+                    enviarLogGlobal(`✨ [IA EVOLUTIVA] Novo Recorde da Célula! Score: ${melhorScorePlayer} na Geração ${geracaoPlayerIA}`);
+                }
+            }
+            
+            else {
+                // Guarda a referência do painel Python para logs
+                painelConexao = ws;
             }
         } catch (e) {}
     });
 });
 
-// Força o Render a mapear a porta estável do contêiner
-const PORT = process.env.PORT || 10000;
+// Processamento Matemático do Algoritmo Genético (Bypass de Lerdeza)
+function processarEvolucaoIA() {
+    geracaoPlayerIA++;
+    
+    // Se a rodada foi boa, estabiliza os genes. Se foi ruim, aplica mutação adaptativa
+    if (scorePartidaAtual >= melhorScorePlayer * 0.8) {
+        enviarLogGlobal(`👍 [GENES] Geração ${geracaoPlayerIA}: Mantendo base sólida. Refinando precisão.`);
+        dnaPlayer.pesoAtaque += (Math.random() - 0.3) * 0.1;
+        dnaPlayer.pesoFuga -= (Math.random() - 0.2) * 0.1;
+    } else {
+        // Mutação de sobrevivência: aumenta o medo e a velocidade de desvio contra perigos
+        enviarLogGlobal(`🧬 [MUTACAO] Geração ${geracaoPlayerIA}: Mutando pesos adaptativos para corrigir falhas.`);
+        dnaPlayer.pesoFuga -= Math.random() * 0.3; // Fica mais cauteloso
+        dnaPlayer.ganhoComida += (Math.random() - 0.5) * 0.2;
+    }
+
+    // Despacha o novo DNA mutado direto para o Tampermonkey na arena viva
+    wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ type: "update_dna", dna: dnaPlayer, gen: geracaoPlayerIA }));
+        }
+    });
+}
+
+function enviarLogGlobal(texto) {
+    console.log(texto);
+    if (painelConexao && painelConexao.readyState === WebSocket.OPEN) {
+        painelConexao.send(JSON.stringify({ type: "ia_log", msg: texto }));
+    }
+}
+
+const PORT = process.env.PORT || 4848;
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`=== MOTOR CLOUD INTELIGENTE ATIVO NA PORTA ${PORT} ===`);
+    console.log(`=== INSTÂNCIA CENTRAL MESTRE DE IA ONLINE NA PORTA ${PORT} ===`);
 });
