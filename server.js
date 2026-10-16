@@ -6,7 +6,6 @@ const bodyParser = require('body-parser');
 const app = express();
 app.use(bodyParser.json());
 
-// Permitir requisições Cross-Origin (CORS)
 app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
@@ -15,7 +14,7 @@ app.use((req, res, next) => {
 
 const server = http.createServer(app);
 
-// Camuflagem de Cabeçalhos/Origem para evitar desconexões da arena do jogo
+// Camuflagem de Origem (Origin Spoofing) para evitar bloqueios/desconexões na arena
 const wss = new WebSocket.Server({ 
     server,
     verifyClient: (info, callback) => {
@@ -25,7 +24,7 @@ const wss = new WebSocket.Server({
 });
 
 let estadoEnxame = {
-    modo: 'follow_mouse', // 'follow_mouse' | 'feed_center'
+    modo: 'follow_mouse', // 'follow_mouse' | 'frenetic_feed'
     ativo: false,
     quantidade: 50,
     tag: 'BoxBot',
@@ -46,7 +45,7 @@ let dnaPlayer = {
 };
 
 app.get('/', (req, res) => {
-    res.send("BoxBots Central Command Engine - Online no Render!");
+    res.send("BoxBots Central Engine Online!");
 });
 
 app.post('/api/sync-arena', (req, res) => {
@@ -58,7 +57,6 @@ app.post('/api/sync-arena', (req, res) => {
 });
 
 wss.on('connection', (ws) => {
-    // Sincroniza estado inicial assim que conecta
     ws.send(JSON.stringify({ type: 'sync_state', state: estadoEnxame, dna: dnaPlayer, gen: geracaoPlayerIA }));
 
     ws.on('message', (message) => {
@@ -73,8 +71,16 @@ wss.on('connection', (ws) => {
             }
             else if (msg.type === 'stop_swarm' || (msg.type === 'ia_status' && msg.ativo === false)) {
                 estadoEnxame.ativo = false;
-                processarEvolucaoIA();
                 enviarParaTodos({ type: 'swarm_status', state: estadoEnxame });
+            }
+            else if (msg.type === 'restart_all') {
+                estadoEnxame.ativo = false;
+                enviarParaTodos({ type: 'system_restart' });
+                
+                // Força o fecho de conexões ativas para reinício limpo
+                setTimeout(() => {
+                    wss.clients.forEach(client => client.close());
+                }, 500);
             }
             else if (msg.type === 'set_mode') {
                 estadoEnxame.modo = msg.modo;
@@ -94,19 +100,6 @@ wss.on('connection', (ws) => {
         } catch (e) {}
     });
 });
-
-function processarEvolucaoIA() {
-    geracaoPlayerIA++;
-    if (scorePartidaAtual >= melhorScorePlayer * 0.8) {
-        dnaPlayer.pesoAtaque += (Math.random() - 0.3) * 0.1;
-        dnaPlayer.pesoFuga -= (Math.random() - 0.2) * 0.1;
-    } else {
-        dnaPlayer.pesoFuga -= Math.random() * 0.3;
-        dnaPlayer.ganhoComida += (Math.random() - 0.5) * 0.2;
-    }
-
-    enviarParaTodos({ type: "update_dna", dna: dnaPlayer, gen: geracaoPlayerIA });
-}
 
 function enviarParaTodos(data) {
     wss.clients.forEach(client => {
